@@ -11,7 +11,6 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -75,46 +74,67 @@ public class SlaMonitorJob {
         }
     }
 
-    /** Single scan pass; returns the number of tickets escalated. Testable without waiting. */
-    @Transactional
+    /**
+     * Single scan pass; returns the number of tickets escalated. Testable
+     * without waiting.
+     *
+     * <p>Deliberately NOT one big transaction: {@code escalateForSla} opens
+     * its own transaction per row, so (a) one poisoned ticket cannot roll
+     * back the escalations of its batch-mates and (b) no long-lived
+     * transaction holds locks across the whole scan.</p>
+     */
     public int escalateBreachedTickets(Instant now) {
         int total = 0;
-        int page = 0;
         while (true) {
             List<Ticket> breaches = ticketRepository.findByStatusInAndSlaDeadlineAtBefore(
                     TicketStatus.ESCALATABLE_STATUSES.stream().toList(),
                     now,
-                    PageRequest.of(page, SCAN_PAGE_SIZE, Sort.by("slaDeadlineAt").ascending()));
+                    // always page 0: every successful escalation moves its ticket
+                    // out of ESCALATABLE_STATUSES, so page 0 continuously refills
+                    // with rows that earlier pages would have shifted away - the
+                    // classic paging-while-mutating skip is impossible here
+                    PageRequest.of(0, SCAN_PAGE_SIZE, Sort.by("slaDeadlineAt").ascending()));
             if (breaches.isEmpty()) {
                 break;
             }
+            int escalatedInPage = 0;
             for (Ticket ticket : breaches) {
                 if (escalateOne(ticket)) {
-                    total++;
+                    escalatedInPage++;
                 }
             }
-            if (breaches.size() < SCAN_PAGE_SIZE) {
+            total += escalatedInPage;
+            // stop when the last page was partial OR nothing progressed
+            // (all rows failed) - the failed rows are retried on the next run
+            if (breaches.size() < SCAN_PAGE_SIZE || escalatedInPage == 0) {
                 break;
             }
-            page++;
         }
         return total;
     }
 
     private boolean escalateOne(Ticket ticket) {
-        // Re-check status inside the transaction: another actor may have
-        // transitioned the ticket since the page was read.
-        Ticket fresh = ticketRepository.findById(ticket.getId()).orElse(null);
-        if (fresh == null || !TicketStatus.ESCALATABLE_STATUSES.contains(fresh.getStatus())) {
+        try {
+            // Re-check status just before writing: another actor may have
+            // transitioned the ticket since the page was read. A racing
+            // transition between this check and the row transaction still
+            // ends in an optimistic-lock conflict, caught below.
+            Ticket fresh = ticketRepository.findById(ticket.getId()).orElse(null);
+            if (fresh == null || !TicketStatus.ESCALATABLE_STATUSES.contains(fresh.getStatus())) {
+                return false;
+            }
+            // Duplicate guard: never record the same breach twice.
+            if (auditService.alreadyRecorded(fresh.getId(), TicketStatus.ESCALATED, ESCALATION_REASON)) {
+                log.debug("Skipping ticket {}: already escalated for this breach", fresh.getTicketNumber());
+                return false;
+            }
+            workflowService.escalateForSla(fresh, ESCALATION_REASON);
+            return true;
+        } catch (Exception ex) {
+            // scheduler resilience: one failing ticket must not stop the scan
+            log.error("SLA escalation failed for ticket {}: {}", ticket.getId(), ex.getMessage(), ex);
             return false;
         }
-        // Duplicate guard: never record the same breach twice.
-        if (auditService.alreadyRecorded(fresh.getId(), TicketStatus.ESCALATED, ESCALATION_REASON)) {
-            log.debug("Skipping ticket {}: already escalated for this breach", fresh.getTicketNumber());
-            return false;
-        }
-        workflowService.escalateForSla(fresh, ESCALATION_REASON);
-        return true;
     }
 
     long scanIntervalMs() {

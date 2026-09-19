@@ -16,7 +16,8 @@ import java.time.Instant;
 import java.util.Date;
 
 /**
- * Single owner of JWT creation and verification (HS256 signing).
+ * Single owner of JWT creation and verification (HMAC signing; the concrete
+ * SHA variant is chosen by jjwt from the key size - 256-bit key -> HS256).
  *
  * <p>Design points:</p>
  * <ul>
@@ -54,7 +55,8 @@ public class JwtService {
         }
         this.signingKey = Keys.hmacShaKeyFor(secretBytes);
         this.tokenTtl = Duration.ofMinutes(properties.expirationMinutes());
-        log.info("JWT service initialized (HS256, token TTL {} minutes)", properties.expirationMinutes());
+        log.info("JWT service initialized (HMAC-SHA, key {} bits, token TTL {} minutes)",
+                secretBytes.length * 8, properties.expirationMinutes());
     }
 
     /** A freshly minted token plus the instant it stops being valid. */

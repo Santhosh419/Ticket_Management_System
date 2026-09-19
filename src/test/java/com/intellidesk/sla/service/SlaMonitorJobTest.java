@@ -62,6 +62,8 @@ class SlaMonitorJobTest {
         onTime = ticket(2L, TicketStatus.IN_PROGRESS, Instant.now().plus(5, ChronoUnit.HOURS));
     }
 
+    // ---- helpers -------------------------------------------------------------
+
     private static Ticket ticket(long id, TicketStatus status, Instant deadline) {
         Ticket t = new Ticket("TKD-2026-00000" + id, "Payment failed", "Money gone, order cancelled",
                 new User("c" + id + "@t.local", "$2a$10$hashhashhashhashhashhashhashhashhashhashhash",
@@ -187,4 +189,58 @@ class SlaMonitorJobTest {
         verify(ticketRepository, times(2)).findByStatusInAndSlaDeadlineAtBefore(
                 anyList(), any(Instant.class), any(PageRequest.class));
     }
+    @Test
+    void oneFailingTicketDoesNotStopTheScan() {
+        Ticket alsoBreached = ticket(3L, TicketStatus.ASSIGNED, Instant.now().minus(2, ChronoUnit.HOURS));
+        when(ticketRepository.findByStatusInAndSlaDeadlineAtBefore(anyList(), any(Instant.class), any(PageRequest.class)))
+                .thenReturn(List.of(breached, alsoBreached))
+                .thenReturn(List.of());
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(breached));
+        when(ticketRepository.findById(3L)).thenReturn(Optional.of(alsoBreached));
+        when(auditService.alreadyRecorded(anyLong(), any(TicketStatus.class), any(String.class)))
+                .thenReturn(false);
+        // first ticket's escalation blows up (e.g. optimistic-lock race)...
+        when(workflowService.escalateForSla(eq(breached), any(String.class)))
+                .thenThrow(new RuntimeException("concurrent modification"));
+        // ...the second must still be escalated
+        when(workflowService.escalateForSla(eq(alsoBreached), any(String.class)))
+                .thenReturn(alsoBreached);
+
+        int escalated = monitor.escalateBreachedTickets(Instant.now());
+
+        assertThat(escalated).isEqualTo(1);
+        verify(workflowService).escalateForSla(eq(alsoBreached), any(String.class));
+    }
+
+    @Test
+    void pagedScanAlwaysReadsPageZeroSoShiftedRowsAreNotSkipped() {
+        // a FULL page (200) that is fully escalated empties page 0, so rows
+        // shift up; the old page++ scan skipped exactly these, page-0-first
+        // must pick them up in the SAME run
+        List<Ticket> fullPage = new java.util.ArrayList<>();
+        for (long i = 1; i <= 200; i++) {
+            fullPage.add(ticket(i, TicketStatus.OPEN, Instant.now().minus(i, ChronoUnit.MINUTES)));
+        }
+        Ticket shiftedIn = ticket(999L, TicketStatus.OPEN, Instant.now().minus(10, ChronoUnit.HOURS));
+
+        when(ticketRepository.findByStatusInAndSlaDeadlineAtBefore(anyList(), any(Instant.class), any(PageRequest.class)))
+                .thenReturn(fullPage)          // run 1: full page
+                .thenReturn(List.of(shiftedIn))// run 2: rows shifted into page 0
+                .thenReturn(List.of());        // run 3: done
+        when(ticketRepository.findById(anyLong())).thenAnswer(inv ->
+                Optional.of(ticket(inv.getArgument(0, Long.class), TicketStatus.OPEN, Instant.now())));
+        when(auditService.alreadyRecorded(anyLong(), any(TicketStatus.class), any(String.class)))
+                .thenReturn(false);
+        when(workflowService.escalateForSla(any(Ticket.class), any(String.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        int escalated = monitor.escalateBreachedTickets(Instant.now());
+
+        assertThat(escalated).isEqualTo(201); // 200 + the shifted-in row
+        org.mockito.ArgumentCaptor<PageRequest> pages = ArgumentCaptor.forClass(PageRequest.class);
+        verify(ticketRepository, times(2)).findByStatusInAndSlaDeadlineAtBefore(
+                anyList(), any(Instant.class), pages.capture());
+        assertThat(pages.getAllValues()).allSatisfy(p -> assertThat(p.getPageNumber()).isZero());
+    }
+
 }

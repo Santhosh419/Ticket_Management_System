@@ -130,6 +130,37 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "Authentication required", request);
     }
 
+    // ---- Concurrency & persistence -----------------------------------------
+
+    /**
+     * Two actors transition/assign/edit the same ticket concurrently: the
+     * loser's flush fails the {@code @Version} check. That is an expected,
+     * retryable business conflict - 409, never a 500.
+     */
+    @ExceptionHandler(org.springframework.orm.ObjectOptimisticLockingFailureException.class)
+    public ResponseEntity<ErrorResponse> handleOptimisticLock(
+            org.springframework.orm.ObjectOptimisticLockingFailureException ex,
+            HttpServletRequest request) {
+        log.warn("Concurrent modification on {} {}: {}", request.getMethod(), request.getRequestURI(),
+                ex.getMessage());
+        return build(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
+                "The resource was modified by someone else. Reload and retry.", request);
+    }
+
+    /**
+     * Unique-constraint races (e.g. two parallel registrations with the same
+     * email after the pre-check passed). Must surface as 409, not 500.
+     */
+    @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorResponse> handleDataIntegrity(
+            org.springframework.dao.DataIntegrityViolationException ex,
+            HttpServletRequest request) {
+        log.warn("Data integrity violation on {} {}: {}", request.getMethod(),
+                request.getRequestURI(), ex.getMessage());
+        return build(HttpStatus.CONFLICT, "DUPLICATE_RESOURCE",
+                "The resource conflicts with existing data (already present?)", request);
+    }
+
     // ---- Fallback ----------------------------------------------------------
 
     @ExceptionHandler(Exception.class)

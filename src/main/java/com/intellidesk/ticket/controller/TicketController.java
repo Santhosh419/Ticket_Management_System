@@ -165,7 +165,8 @@ public class TicketController {
             @AuthenticationPrincipal IntelliDeskUserDetails principal) {
         Ticket ticket = workflowService.transition(
                 id, request.target(), principal.getUser(), request.reason(), request.resolution());
-        return mapper.toResponse(ticket);
+        // customers perform transitions too (close/reopen) - never expose agent hints to them
+        return mapper.toResponse(ticket, principal.getUser().getRole() != com.intellidesk.user.domain.Role.CUSTOMER);
     }
 
     @Operation(summary = "Append-only audit trail of the ticket (viewer must have ticket access)")

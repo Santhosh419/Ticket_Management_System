@@ -29,6 +29,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -80,20 +82,24 @@ class AssignmentServiceTest {
         return u;
     }
 
-    private void skilled(User agent, int proficiency) {
-        when(agentSkillRepository.findByAgentId(agent.getId())).thenReturn(List.of(
-                new com.intellidesk.agent.entity.AgentSkill(agent, payment, proficiency) {{
-                    ReflectionTestUtils.setField(this, "id", 1L);
-                }}));
+    /** Batched proficiency read for the whole pool (the service queries ONCE). */
+    private void skills(com.intellidesk.agent.entity.AgentSkill... all) {
+        when(agentSkillRepository.findByAgentIdIn(any())).thenReturn(List.of(all));
+    }
+
+    /** Batched workload read: rows of {agentId, activeCount}. */
+    private void workloads(Object[]... rows) {
+        when(ticketRepository.countActiveByAgentIdIn(any(), any())).thenReturn(List.of(rows));
+    }
+
+    private com.intellidesk.agent.entity.AgentSkill skill(User agent, int level) {
+        return new com.intellidesk.agent.entity.AgentSkill(agent, payment, level);
     }
 
     private void poolSetup() {
         when(agentSkillRepository.findByCategoryId(1L)).thenReturn(
-                List.of(new com.intellidesk.agent.entity.AgentSkill(expertBusy, payment, 5),
-                        new com.intellidesk.agent.entity.AgentSkill(noviceIdle, payment, 2),
-                        new com.intellidesk.agent.entity.AgentSkill(inactiveExpert, payment, 5)));
-        skilled(expertBusy, 5);
-        skilled(noviceIdle, 2);
+                List.of(skill(expertBusy, 5), skill(noviceIdle, 2), skill(inactiveExpert, 5)));
+        skills(skill(expertBusy, 5), skill(noviceIdle, 2));
     }
 
     @Test
@@ -101,8 +107,7 @@ class AssignmentServiceTest {
         poolSetup();
         // expert busy (8 active), novice idle (0): 0.5*1 + 0.3*0.2 + 0.2*1 = 0.76
         // vs novice: 0.5*0.4 + 0.3*1 + 0.2*1 = 0.70 -> expert still wins
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(eq(10L), any())).thenReturn(8L);
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(eq(20L), any())).thenReturn(0L);
+        workloads(new Object[]{10L, 8L}, new Object[]{20L, 0L});
 
         User winner = assignmentService.selectAgent(ticket);
 
@@ -114,12 +119,9 @@ class AssignmentServiceTest {
         poolSetup();
         // identical proficiency (5 vs 5) -> workload alone decides
         when(agentSkillRepository.findByCategoryId(1L)).thenReturn(
-                List.of(new com.intellidesk.agent.entity.AgentSkill(expertBusy, payment, 5),
-                        new com.intellidesk.agent.entity.AgentSkill(noviceIdle, payment, 5)));
-        when(agentSkillRepository.findByAgentId(20L)).thenReturn(List.of(
-                new com.intellidesk.agent.entity.AgentSkill(noviceIdle, payment, 5)));
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(eq(10L), any())).thenReturn(0L);
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(eq(20L), any())).thenReturn(5L);
+                List.of(skill(expertBusy, 5), skill(noviceIdle, 5)));
+        skills(skill(expertBusy, 5), skill(noviceIdle, 5));
+        workloads(new Object[]{10L, 0L}, new Object[]{20L, 5L});
 
         User winner = assignmentService.selectAgent(ticket);
 
@@ -130,8 +132,9 @@ class AssignmentServiceTest {
     void inactiveAgentsAreExcludedFromThePool() {
         // ONLY the inactive expert has the skill -> fallback must exclude them
         when(agentSkillRepository.findByCategoryId(1L)).thenReturn(List.of(
-                new com.intellidesk.agent.entity.AgentSkill(inactiveExpert, payment, 5)));
+                skill(inactiveExpert, 5)));
         when(userRepository.findByRoleAndActiveTrue(Role.AGENT)).thenReturn(List.of(noviceIdle));
+        // no per-agent stubs needed: an empty batch result = proficiency 0 / load 0
 
         User winner = assignmentService.selectAgent(ticket);
 
@@ -142,6 +145,7 @@ class AssignmentServiceTest {
     void noSkilledAgentFallsBackToAllActiveAgents() {
         when(agentSkillRepository.findByCategoryId(1L)).thenReturn(List.of());
         when(userRepository.findByRoleAndActiveTrue(Role.AGENT)).thenReturn(List.of(noviceIdle));
+        // empty batch reads are the Mockito defaults - nothing to stub
 
         User winner = assignmentService.selectAgent(ticket);
 
@@ -152,12 +156,10 @@ class AssignmentServiceTest {
     void tiesBreakToTheLowerAgentId() {
         poolSetup();
         // identical proficiency AND identical workload -> deterministic id tie-break
-        when(agentSkillRepository.findByAgentId(20L)).thenReturn(List.of(
-                new com.intellidesk.agent.entity.AgentSkill(noviceIdle, payment, 5)));
         when(agentSkillRepository.findByCategoryId(1L)).thenReturn(
-                List.of(new com.intellidesk.agent.entity.AgentSkill(expertBusy, payment, 5),
-                        new com.intellidesk.agent.entity.AgentSkill(noviceIdle, payment, 5)));
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(anyLong(), any())).thenReturn(3L);
+                List.of(skill(expertBusy, 5), skill(noviceIdle, 5)));
+        skills(skill(expertBusy, 5), skill(noviceIdle, 5));
+        workloads(new Object[]{10L, 3L}, new Object[]{20L, 3L});
 
         User winner = assignmentService.selectAgent(ticket);
 
@@ -168,8 +170,7 @@ class AssignmentServiceTest {
     void criticalTicketPrefersExpertDespiteLoad() {
         ticket.setPriority(TicketPriority.CRITICAL);
         poolSetup();
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(eq(10L), any())).thenReturn(9L);
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(eq(20L), any())).thenReturn(0L);
+        workloads(new Object[]{10L, 9L}, new Object[]{20L, 0L});
 
         User winner = assignmentService.selectAgent(ticket);
 
@@ -180,7 +181,7 @@ class AssignmentServiceTest {
     @Test
     void selectionIsDeterministicAcrossRuns() {
         poolSetup();
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(anyLong(), any())).thenReturn(2L);
+        workloads(new Object[]{10L, 2L}, new Object[]{20L, 2L});
 
         User first = assignmentService.selectAgent(ticket);
         User second = assignmentService.selectAgent(ticket);
@@ -214,7 +215,7 @@ class AssignmentServiceTest {
     void assignHappyPathGoesThroughWorkflow() {
         poolSetup();
         when(ticketRepository.findWithDetailsById(500L)).thenReturn(Optional.of(ticket));
-        when(ticketRepository.countByAssignedAgentIdAndStatusIn(anyLong(), any())).thenReturn(0L);
+        workloads(new Object[]{10L, 0L}, new Object[]{20L, 0L});
         when(workflowService.assignToAgent(any(), any(), any(), any())).thenReturn(ticket);
 
         Ticket assigned = assignmentService.assign(500L, null);
@@ -223,5 +224,20 @@ class AssignmentServiceTest {
         org.mockito.Mockito.verify(workflowService).assignToAgent(
                 eq(ticket), eq(expertBusy), eq(null),
                 org.mockito.ArgumentMatchers.contains("PAYMENT"));
+    }
+
+    @Test
+    void selectionReadsThePoolInBatchesNeverPerAgent() {
+        // regression pin for the N+1 fix: one batched read per table,
+        // regardless of pool size - never a query per candidate
+        poolSetup();
+        workloads(new Object[]{10L, 1L}, new Object[]{20L, 2L});
+
+        assignmentService.selectAgent(ticket);
+
+        verify(agentSkillRepository, times(1)).findByAgentIdIn(any());
+        verify(ticketRepository, times(1)).countActiveByAgentIdIn(any(), any());
+        verify(agentSkillRepository, never()).findByAgentId(anyLong());
+        verify(ticketRepository, never()).countByAssignedAgentIdAndStatusIn(anyLong(), any());
     }
 }

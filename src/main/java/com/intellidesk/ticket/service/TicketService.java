@@ -293,9 +293,11 @@ public class TicketService {
     }
 
     private static Pageable clamp(Pageable pageable) {
-        return pageable.getPageSize() > MAX_PAGE_SIZE
-                ? org.springframework.data.domain.PageRequest.of(
-                        pageable.getPageNumber(), MAX_PAGE_SIZE, pageable.getSort())
-                : pageable;
+        // negative page indexes and oversized pages are client input - clamp
+        // them, never let PageRequest.of throw a 500 for ?page=-1&size=9999
+        return org.springframework.data.domain.PageRequest.of(
+                Math.max(pageable.getPageNumber(), 0),
+                Math.min(pageable.getPageSize(), MAX_PAGE_SIZE),
+                pageable.getSort());
     }
 }

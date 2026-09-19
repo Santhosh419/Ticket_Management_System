@@ -18,7 +18,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Smart assignment: pick the best active agent for a ticket and hand it over
@@ -105,13 +107,35 @@ public class AssignmentService {
         boolean critical = ticket.getPriority() == TicketPriority.CRITICAL;
         boolean high = ticket.getPriority() == TicketPriority.HIGH;
 
-        // min over (score desc, id asc) = highest score; ties -> lower agent id
-        User best = pool.stream()
-                .min(Comparator.comparingDouble((User agent) ->
-                                scorer.score(factsOf(agent, category), critical, high).total())
-                        .reversed()
-                        .thenComparingLong(User::getId))
-                .orElseThrow();
+        // TWO batched reads for the WHOLE pool (not two per candidate, and not
+        // re-evaluated inside a comparator - the classic assignment N+1)
+        Map<Long, Integer> proficiencyByAgent = new HashMap<>();
+        for (com.intellidesk.agent.entity.AgentSkill skill
+                : agentSkillRepository.findByAgentIdIn(idsOf(pool))) {
+            if (skill.getCategory().getId().equals(category.getId())) {
+                proficiencyByAgent.merge(skill.getAgent().getId(), skill.getProficiencyLevel(), Math::max);
+            }
+        }
+        Map<Long, Integer> workloadByAgent = new HashMap<>();
+        for (Object[] row : ticketRepository.countActiveByAgentIdIn(
+                idsOf(pool), TicketStatus.ACTIVE_WORK_STATUSES)) {
+            workloadByAgent.put((Long) row[0], Math.toIntExact((Long) row[1]));
+        }
+
+        // single pass: highest score wins, ties -> lower agent id (deterministic)
+        User best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (User agent : pool) {
+            AgentScorer.CandidateFacts facts = new AgentScorer.CandidateFacts(
+                    proficiencyByAgent.getOrDefault(agent.getId(), 0),
+                    workloadByAgent.getOrDefault(agent.getId(), 0));
+            double score = scorer.score(facts, critical, high).total();
+            if (best == null || score > bestScore
+                    || (score == bestScore && agent.getId() < best.getId())) {
+                best = agent;
+                bestScore = score;
+            }
+        }
 
         log.debug("Assignment pool for ticket {}: {} candidates{}; winner={}",
                 ticket.getTicketNumber(), pool.size(),
@@ -120,15 +144,8 @@ public class AssignmentService {
         return best;
     }
 
-    private AgentScorer.CandidateFacts factsOf(User agent, Category category) {
-        int proficiency = agentSkillRepository.findByAgentId(agent.getId()).stream()
-                .filter(skill -> skill.getCategory().getId().equals(category.getId()))
-                .findFirst()
-                .map(com.intellidesk.agent.entity.AgentSkill::getProficiencyLevel)
-                .orElse(0);
-        long active = ticketRepository.countByAssignedAgentIdAndStatusIn(
-                agent.getId(), TicketStatus.ACTIVE_WORK_STATUSES);
-        return new AgentScorer.CandidateFacts(proficiency, Math.toIntExact(active));
+    private static List<Long> idsOf(List<User> agents) {
+        return agents.stream().map(User::getId).toList();
     }
 
 }

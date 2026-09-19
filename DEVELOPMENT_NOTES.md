@@ -294,3 +294,66 @@ remembering:
 Contract preservation: explicit `categoryId`/`priority` in the request still
 win; classification only fills gaps. That is why 127 pre-existing tests kept
 passing unchanged while the creation flow grew a whole new stage.
+
+## Audit round (senior review, no new features)
+
+### 29. A transition response leaked the agent hint to customers
+
+`POST /api/tickets/{id}/status` is used by CUSTOMERS (close, reopen) and was
+mapped with `toResponse(ticket)` - the hints-enabled overload - so the
+internal `suggestedResponse` rode along in every customer's 200 response.
+Every other path was viewer-aware; this one endpoint was missed. Fix: role
+aware flag here too; regression pinned in the lifecycle integration test
+(customer close response must not contain "suggestedResponse").
+Lesson: when a DTO gains a sensitive field, grep EVERY mapper call site -
+"who is the viewer?" is a per-endpoint question.
+
+### 30. The SLA monitor ran the whole batch in one transaction
+
+`escalateBreachedTickets` was `@Transactional`, so all pages of a scan shared
+one transaction: a single poisoned row rolled back every other escalation in
+the run, and row locks were held across the whole scan. It also paged with
+`page++` while successful escalations removed rows from the result set - the
+classic paging-while-mutating skip (rows shifted from page 1 into page 0 were
+missed until the NEXT run). Fix: no outer transaction (`escalateForSla`
+already opens one per row), per-row try/catch so one bad ticket cannot stop
+the scan, and always fetch page 0 with a no-progress break - successful
+escalations refill page 0, failures are retried next run. Two new unit tests:
+failure isolation and shifted-row pickup.
+Lesson: background jobs want per-work-item transactions; paging a live,
+mutating set requires either keyset pagination or always-page-0 with a
+progress guarantee.
+
+### 31. Expected conflicts answered 500: optimistic-lock and unique races
+
+Two actors transitioning/assigning/editing the same ticket end with the
+loser's `@Version` check failing -> `ObjectOptimisticLockingFailureException`
+-> generic 500. Two parallel registrations with the same email (after both
+passed the pre-check) -> `DataIntegrityViolationException` -> 500. Both are
+normal, retryable business conflicts: dedicated handlers now answer 409
+(`CONCURRENT_MODIFICATION` / `DUPLICATE_RESOURCE`). Unit-tested directly on
+the handler.
+Lesson: any entity with `@Version` and any table with a unique constraint
+WILL produce these exceptions in production - map them the day you add the
+constraint, not after the first 500 page.
+
+### 32. Assignment queried the DB per candidate - inside the comparator
+
+`factsOf` (2 queries per agent) was invoked from the comparator, so scoring
+N candidates issued up to ~2N queries and re-scored the same agent repeatedly.
+Fixed with two batched reads (skills by `agentIdIn`, one grouped workload
+count) and a single pass with an explicit lower-id tie-break; the workload
+admin endpoint had the same shape and got the same treatment. A regression
+test pins "one batched call per table, never a per-agent query".
+Lesson: never do data access inside a comparator; batch first, score once,
+then select.
+
+### 33. Small catches: negative page indexes and an honest JWT log
+
+`clamp` only capped the page size, so `?page=-1` reached `PageRequest.of`
+and blew up with a 500; it now clamps page and size (mocked-Pageable unit
+test, because `PageRequest.of` refuses negative indexes at construction).
+And `JwtService` logged "HS256" regardless of key size while jjwt picks the
+SHA variant from the key - the log now states the key bits instead of an
+algorithm it does not control. Debugging starts from the logs; logs must not
+lie.

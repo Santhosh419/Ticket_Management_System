@@ -1,6 +1,7 @@
 package com.intellidesk.ticket.service;
 
 import com.intellidesk.category.entity.Category;
+import org.springframework.data.domain.Page;
 import com.intellidesk.category.repository.CategoryRepository;
 import com.intellidesk.common.exception.InvalidRequestException;
 import com.intellidesk.common.exception.InvalidTicketStateException;
@@ -176,6 +177,28 @@ class TicketServiceTest {
                 customer))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("SLA policy");
+    }
+
+    @Test
+    void pagingInputIsClampedNeverThrownOn() {
+        // ?page=-1&size=9999 is client input: clamp to (0, MAX_PAGE_SIZE).
+        // PageRequest.of itself refuses a negative index, so the hostile
+        // pageable arrives as a mock - exactly what a sloppy resolver
+        // integration would hand the service.
+        when(ticketRepository.findByReporterId(anyLong(), any())).thenReturn(Page.empty());
+        org.springframework.data.domain.Pageable hostile =
+                org.mockito.Mockito.mock(org.springframework.data.domain.Pageable.class);
+        org.mockito.Mockito.when(hostile.getPageNumber()).thenReturn(-1);
+        org.mockito.Mockito.when(hostile.getPageSize()).thenReturn(5000);
+        org.mockito.Mockito.when(hostile.getSort()).thenReturn(org.springframework.data.domain.Sort.unsorted());
+
+        ticketService.getTicketsOfCustomer(customer, hostile);
+
+        org.mockito.ArgumentCaptor<org.springframework.data.domain.Pageable> captor =
+                org.mockito.ArgumentCaptor.forClass(org.springframework.data.domain.Pageable.class);
+        verify(ticketRepository).findByReporterId(anyLong(), captor.capture());
+        assertThat(captor.getValue().getPageNumber()).isZero();
+        assertThat(captor.getValue().getPageSize()).isEqualTo(100);
     }
 
     @Test

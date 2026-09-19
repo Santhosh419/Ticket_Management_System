@@ -47,4 +47,18 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
 
     /** Assignment workload term: an agent's in-flight ticket count. */
     long countByAssignedAgentIdAndStatusIn(Long agentId, java.util.Collection<TicketStatus> statuses);
+
+    /**
+     * Batched workload term for a whole candidate pool: one grouped query
+     * instead of one count per agent (N+1). Rows are {agentId, activeCount};
+     * agents without active tickets are absent from the result.
+     */
+    @org.springframework.data.jpa.repository.Query(
+            "select t.assignedAgent.id, count(t) from Ticket t "
+            + "where t.assignedAgent.id in :agentIds and t.status in :statuses "
+            + "group by t.assignedAgent.id")
+    List<Object[]> countActiveByAgentIdIn(@org.springframework.data.repository.query.Param("agentIds")
+                                          java.util.Collection<Long> agentIds,
+                                          @org.springframework.data.repository.query.Param("statuses")
+                                          java.util.Collection<TicketStatus> statuses);
 }

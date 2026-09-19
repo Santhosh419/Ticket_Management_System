@@ -19,7 +19,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Admin management of agent expertise and the workload overview that makes
@@ -91,20 +93,34 @@ public class AgentAdminService {
 
     @Transactional(readOnly = true)
     public List<AgentWorkloadResponse> getAgentWorkloads() {
-        return userRepository.findByRoleAndActiveTrue(Role.AGENT).stream()
+        List<User> agents = userRepository.findByRoleAndActiveTrue(Role.AGENT);
+        if (agents.isEmpty()) {
+            return List.of();
+        }
+        // two batched reads instead of two queries per agent (N+1)
+        List<Long> agentIds = agents.stream().map(User::getId).toList();
+        Map<Long, List<AgentWorkloadResponse.SkillSummary>> skillsByAgent = new HashMap<>();
+        for (AgentSkill skill : agentSkillRepository.findByAgentIdIn(agentIds)) {
+            skillsByAgent.computeIfAbsent(skill.getAgent().getId(), k -> new java.util.ArrayList<>())
+                    .add(new AgentWorkloadResponse.SkillSummary(
+                            skill.getCategory().getId(),
+                            skill.getCategory().getCode(),
+                            skill.getProficiencyLevel()));
+        }
+        Map<Long, Long> workloadByAgent = new HashMap<>();
+        for (Object[] row : ticketRepository.countActiveByAgentIdIn(
+                agentIds, TicketStatus.ACTIVE_WORK_STATUSES)) {
+            workloadByAgent.put((Long) row[0], (Long) row[1]);
+        }
+
+        return agents.stream()
                 .map(agent -> new AgentWorkloadResponse(
                         agent.getId(),
                         agent.getFullName(),
                         agent.getEmail(),
                         agent.isActive(),
-                        agentSkillRepository.findByAgentId(agent.getId()).stream()
-                                .map(s -> new AgentWorkloadResponse.SkillSummary(
-                                        s.getCategory().getId(),
-                                        s.getCategory().getCode(),
-                                        s.getProficiencyLevel()))
-                                .toList(),
-                        ticketRepository.countByAssignedAgentIdAndStatusIn(
-                                agent.getId(), TicketStatus.ACTIVE_WORK_STATUSES)))
+                        skillsByAgent.getOrDefault(agent.getId(), List.of()),
+                        workloadByAgent.getOrDefault(agent.getId(), 0L)))
                 .toList();
     }
 

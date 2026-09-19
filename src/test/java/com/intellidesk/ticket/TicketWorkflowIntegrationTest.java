@@ -165,9 +165,11 @@ class TicketWorkflowIntegrationTest {
         assertThat(post("/api/tickets/" + ticketId + "/status", agentToken,
                 Map.of("target", "RESOLVED", "resolution", "Second refund processed."))
                 .getBody()).contains("\"status\":\"RESOLVED\"");
-        assertThat(post("/api/tickets/" + ticketId + "/status", customer,
-                Map.of("target", "CLOSED", "reason", "Money received, thank you"))
-                .getBody()).contains("\"status\":\"CLOSED\"");
+        String closed = post("/api/tickets/" + ticketId + "/status", customer,
+                Map.of("target", "CLOSED", "reason", "Money received, thank you")).getBody();
+        assertThat(closed).contains("\"status\":\"CLOSED\"")
+                // regression: transitions answered to CUSTOMERS never carry agent hints
+                .doesNotContain("suggestedResponse");
 
         // reopen inside the window is allowed for the owner; OPEN clears the agent
         ResponseEntity<String> reopened = post("/api/tickets/" + ticketId + "/status",
