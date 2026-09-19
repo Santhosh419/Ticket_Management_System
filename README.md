@@ -8,11 +8,11 @@ suggested response) through a replaceable AI abstraction, assigns them to the be
 suited agent via a deterministic scoring algorithm, enforces a controlled ticket
 workflow, and monitors SLA deadlines with automatic escalation.
 
-> **Status: Phase 4 complete (business intelligence)** — on top of Phases 1–3:
-> controlled status workflow with a full audit trail, agent skills +
-> deterministic smart assignment, SLA deadline evaluation, a scheduled SLA
-> monitor with idempotent automatic escalation. Still ahead: comments, AI
-> classification (replaceable service), search, dashboards, docs, Docker.
+> **Status: Phase 5 complete (classification layer)** — on top of Phases 1–4:
+> controlled workflow with audit trail, smart assignment, SLA monitoring with
+> escalation, and now a replaceable ticket-classification seam (rule-based
+> today, pluggable AI provider tomorrow) wired into ticket creation. Still
+> ahead: comments, search, dashboards, docs, Docker.
 > See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for engineering notes.
 
 ## Technology stack
@@ -104,8 +104,10 @@ leakage, no race conditions), `title`, `description`, `status`, `priority`,
 `slaDeadlineAt`, `sla {status: ON_TRACK|AT_RISK|BREACHED, minutesToDeadline}`
 (evaluated at read time), `resolution` (absent until resolved),
 `resolvedAt`, `closedAt`, `escalatedAt` (kept after de-escalation as the
-record of the last escalation). Null fields are omitted (`non_null` JSON
-inclusion).
+record of the last escalation), `sentiment` + `suggestedResponse`
+(classification output; the suggested response is an internal agent hint —
+customer-facing responses never contain it). Null fields are omitted
+(`non_null` JSON inclusion).
 
 Update rules: customers may edit title/description of their OWN ticket while
 it is OPEN (409 afterwards); only ADMINs change category/priority — a priority
@@ -243,6 +245,49 @@ a 409 with the legal alternatives; forbidden actors get 403.
 Side effects: resolve → `resolvedAt` + resolution note; close → `closedAt`;
 reopen → clears `resolvedAt`/`closedAt`/`resolution`; escalate → `escalatedAt`.
 
+## Classification (replaceable seam)
+
+Ticket creation runs `request -> validation -> classification -> creation ->
+SLA -> assignment -> history -> response`. The seam:
+
+```java
+public interface TicketClassificationService {
+    TicketClassification classify(String title, String description);
+}
+// TicketClassification(categoryCode, priority, sentiment, suggestedResponse)
+```
+
+Business logic depends only on the interface. The active implementation is a
+single configuration switch — `intellidesk.classification.provider`:
+
+| Provider | Bean | Behaviour |
+|----------|------|-----------|
+| `rule-based` (default) | `RuleBasedTicketClassificationService` | deterministic keyword/phrase scoring, zero I/O, works fully offline |
+| `ai` (future) | `AiTicketClassificationService` | external AI provider; isolated behind the same interface |
+
+How the rule-based implementation decides (pure functions, same input ->
+same output):
+
+- **Category** — one point per DISTINCT keyword hit (word-boundary,
+  case-insensitive) per category; highest score wins, ties break in the fixed
+  order PAYMENT > SECURITY > ACCOUNT > TECHNICAL > ORDER > DELIVERY; no hits
+  -> OTHER.
+- **Priority** — phrase tiers: CRITICAL (outage, production down, data loss,
+  all users, …) > HIGH (urgent, cannot access, losing money, …) > LOW (no
+  hurry, cosmetic, …), default MEDIUM. An explicit request priority always
+  wins over the classified one; an explicit `categoryId` likewise.
+- **Sentiment** — NEGATIVE keywords beat POSITIVE ones, otherwise NEUTRAL.
+- **Suggested response** — canned per-category template with a
+  sentiment-aware prefix (an apology for angry customers). Stored on the
+  ticket, shown to agents only.
+
+Availability contract: classification is an enhancement, never a dependency.
+`TicketService` wraps every call in a fallback — if the provider throws
+(provider outage, timeout, malformed response), the ticket is still created
+with OTHER/MEDIUM/NEUTRAL and a warning is logged. There are no API keys and
+no network calls anywhere in the default setup, and tests never touch a
+network.
+
 ## Smart assignment (deterministic, explainable)
 
 When `intellidesk.assignment.auto-assign-on-create=true`, a new ticket is
@@ -295,6 +340,7 @@ guard — a ticket can never collect two escalation rows per breach.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
+| `intellidesk.classification.provider` | `rule-based` | `rule-based` today; `ai` swaps in the future AI bean |
 | `intellidesk.assignment.auto-assign-on-create` | `false` | assign best agent on create |
 | `intellidesk.assignment.weight-expertise/workload/availability` | 0.50/0.30/0.20 | scoring weights |
 | `intellidesk.assignment.max-active-tickets-per-agent` | 10 | capacity cap |

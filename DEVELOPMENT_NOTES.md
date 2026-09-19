@@ -271,3 +271,26 @@ applying only partially (missing imports in `TicketController`, a leftover
 edit plus `grep` verification. The compiler catches these eventually - but
 only after a full failed compile cycle.
 Lesson (recurring): trust anchors, not fuzzy matches; grep after batches.
+
+### 28. The classification seam: enhancement, never dependency
+
+`TicketClassificationService` is one interface, one result record, and a
+config-selected implementation (`@ConditionalOnProperty` with
+`matchIfMissing = true` for the rule-based default). Three decisions worth
+remembering:
+
+1. The contract returns a category CODE, not the entity - the abstraction
+   stays persistence-free, the service layer resolves the code (and falls
+   back to OTHER if a code is unknown).
+2. `TicketService.create` calls it through `classifySafely`: any exception
+   becomes a warning plus `TicketClassification.fallback()`. When an AI
+   provider is added later, its outage degrades to "ticket lands in the
+   general queue" - ticket creation can never be down because a
+   classification dependency is down. The fallback path has its own unit test
+   (classifier throws -> ticket still created).
+3. The suggested response is an agent hint, so the mapper gained a
+   viewer-aware overload and every customer-facing path strips it. Sentiment
+   stays visible - it describes the customer's OWN message.
+Contract preservation: explicit `categoryId`/`priority` in the request still
+win; classification only fills gaps. That is why 127 pre-existing tests kept
+passing unchanged while the creation flow grew a whole new stage.

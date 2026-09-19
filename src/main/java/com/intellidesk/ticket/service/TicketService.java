@@ -2,6 +2,8 @@ package com.intellidesk.ticket.service;
 
 import com.intellidesk.category.entity.Category;
 import com.intellidesk.category.repository.CategoryRepository;
+import com.intellidesk.classification.TicketClassification;
+import com.intellidesk.classification.TicketClassificationService;
 import com.intellidesk.common.exception.InvalidRequestException;
 import com.intellidesk.common.exception.InvalidTicketStateException;
 import com.intellidesk.common.exception.ResourceNotFoundException;
@@ -58,6 +60,7 @@ public class TicketService {
     private final AssignmentService assignmentService;
     private final AssignmentProperties assignmentProperties;
     private final TicketAuditService auditService;
+    private final TicketClassificationService classificationService;
 
     public TicketService(TicketRepository ticketRepository,
                          CategoryRepository categoryRepository,
@@ -66,7 +69,8 @@ public class TicketService {
                          TicketMapper mapper,
                          AssignmentService assignmentService,
                          AssignmentProperties assignmentProperties,
-                         TicketAuditService auditService) {
+                         TicketAuditService auditService,
+                         TicketClassificationService classificationService) {
         this.ticketRepository = ticketRepository;
         this.categoryRepository = categoryRepository;
         this.slaPolicyRepository = slaPolicyRepository;
@@ -75,20 +79,27 @@ public class TicketService {
         this.assignmentService = assignmentService;
         this.assignmentProperties = assignmentProperties;
         this.auditService = auditService;
+        this.classificationService = classificationService;
     }
 
     // ---- commands ----------------------------------------------------------
 
     @Transactional
     public TicketResponse create(CreateTicketRequest request, User reporter) {
-        Category category = categoryRepository.findById(request.categoryId())
-                .filter(Category::isActive)
-                .orElseThrow(() -> new InvalidRequestException(
-                        "Category " + request.categoryId() + " does not exist or is inactive"));
+        // request -> validation (bean validation on the DTO) -> classification
+        TicketClassification classification = classifySafely(request.title(), request.description());
 
-        SlaPolicy policy = slaPolicyRepository.findByPriorityAndActiveTrue(request.priority())
+        // explicit inputs win over classification (Phase 3 contract stays intact);
+        // omitted ones come from the classifier - rule-based today, AI tomorrow
+        Category category = resolveCategory(request.categoryId(), classification.categoryCode());
+        TicketPriority priority = request.priority() != null
+                ? request.priority()
+                : classification.priority();
+
+        // SLA calculation from the resolved priority
+        SlaPolicy policy = slaPolicyRepository.findByPriorityAndActiveTrue(priority)
                 .orElseThrow(() -> new IllegalStateException(
-                        "No active SLA policy configured for priority " + request.priority()));
+                        "No active SLA policy configured for priority " + priority));
 
         Instant deadline = Instant.now().plus(Duration.ofHours(policy.getResolutionHours()));
         Ticket ticket = new Ticket(
@@ -97,10 +108,12 @@ public class TicketService {
                 request.description().trim(),
                 reporter,
                 category,
-                request.priority(),
+                priority,
                 policy,
                 deadline
         );
+        ticket.setSentiment(classification.sentiment());
+        ticket.setSuggestedResponse(classification.suggestedResponse());
 
         Ticket saved = ticketRepository.saveAndFlush(ticket); // INSERT, id assigned
         saved.setTicketNumber(numberGenerator.format(saved.getId(), saved.getCreatedAt()));
@@ -118,7 +131,37 @@ public class TicketService {
                 saved.getTicketNumber(), saved.getId(), category.getCode(),
                 saved.getPriority(), deadline,
                 saved.getAssignedAgent() == null ? "-" : saved.getAssignedAgent().getEmail());
-        return mapper.toResponse(saved);
+        return mapper.toResponse(saved, false); // the reporter never sees agent hints
+    }
+
+    /**
+     * Availability guard: classification is an ENHANCEMENT, not a dependency.
+     * If any implementation (today rule-based, tomorrow an external AI service)
+     * throws - provider outage, timeout, bad response - ticket creation
+     * continues with safe defaults instead of failing the customer.
+     */
+    private TicketClassification classifySafely(String title, String description) {
+        try {
+            return classificationService.classify(title, description);
+        } catch (Exception e) {
+            log.warn("Ticket classification failed ({}); using fallback category/priority",
+                    e.getMessage());
+            return TicketClassification.fallback();
+        }
+    }
+
+    /** Explicit categoryId wins; otherwise the classified code is resolved. */
+    private Category resolveCategory(Long categoryId, String classifiedCode) {
+        if (categoryId != null) {
+            return categoryRepository.findById(categoryId)
+                    .filter(Category::isActive)
+                    .orElseThrow(() -> new InvalidRequestException(
+                            "Category " + categoryId + " does not exist or is inactive"));
+        }
+        return categoryRepository.findByCode(classifiedCode)
+                .filter(Category::isActive)
+                .orElseThrow(() -> new InvalidRequestException(
+                        "Classified category " + classifiedCode + " does not exist or is inactive"));
     }
 
     @Transactional
@@ -141,7 +184,7 @@ public class TicketService {
         Ticket saved = ticketRepository.save(ticket);
         log.info("Ticket {} updated by {} id={} (role={})",
                 saved.getTicketNumber(), principal.getEmail(), principal.getId(), principal.getRole());
-        return mapper.toResponse(saved);
+        return mapper.toResponse(saved, principal.getRole() != Role.CUSTOMER);
     }
 
     // ---- queries -----------------------------------------------------------
@@ -151,21 +194,21 @@ public class TicketService {
         Ticket ticket = ticketRepository.findWithDetailsById(id)
                 .orElseThrow(() -> ResourceNotFoundException.of("Ticket", id));
         assertCanView(ticket, principal);
-        return mapper.toResponse(ticket);
+        return mapper.toResponse(ticket, principal.getRole() != Role.CUSTOMER);
     }
 
     @Transactional(readOnly = true)
     public Page<TicketResponse> getTicketsOfCustomer(User customer, Pageable pageable) {
         Page<Ticket> page = ticketRepository.findByReporterId(
                 customer.getId(), clamp(pageable));
-        return page.map(mapper::toResponse);
+        return page.map(t -> mapper.toResponse(t, false));
     }
 
     @Transactional(readOnly = true)
     public Page<TicketResponse> getAssignedTickets(User agent, Pageable pageable) {
         Page<Ticket> page = ticketRepository.findByAssignedAgentId(
                 agent.getId(), clamp(pageable));
-        return page.map(mapper::toResponse);
+        return page.map(t -> mapper.toResponse(t, true));
     }
 
     @Transactional(readOnly = true)
@@ -173,7 +216,7 @@ public class TicketService {
         Page<Ticket> page = (status == null)
                 ? ticketRepository.findAllByOrderByCreatedAtDesc(clamp(pageable))
                 : ticketRepository.findByStatus(status, clamp(pageable));
-        return page.map(mapper::toResponse);
+        return page.map(t -> mapper.toResponse(t, true));
     }
 
     // ---- authorization -----------------------------------------------------

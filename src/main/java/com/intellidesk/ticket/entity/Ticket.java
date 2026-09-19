@@ -1,6 +1,7 @@
 package com.intellidesk.ticket.entity;
 
 import com.intellidesk.category.entity.Category;
+import com.intellidesk.classification.domain.Sentiment;
 import com.intellidesk.common.domain.BaseEntity;
 import com.intellidesk.sla.entity.SlaPolicy;
 import com.intellidesk.ticket.domain.TicketPriority;
@@ -103,6 +104,15 @@ public class Ticket extends BaseEntity {
 
     @Column(name = "closed_at")
     private Instant closedAt;
+
+    /** Sentiment detected at creation by the classification layer (nullable for old rows). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "sentiment", length = 20)
+    private Sentiment sentiment;
+
+    /** Internal agent hint produced by the classifier; NEVER exposed to customers. */
+    @Column(name = "suggested_response", columnDefinition = "text")
+    private String suggestedResponse;
 
     @Version
     @Column(nullable = false)
@@ -226,6 +236,22 @@ public class Ticket extends BaseEntity {
 
     public void setResolution(String resolution) {
         this.resolution = resolution;
+    }
+
+    public Sentiment getSentiment() {
+        return sentiment;
+    }
+
+    public void setSentiment(Sentiment sentiment) {
+        this.sentiment = sentiment;
+    }
+
+    public String getSuggestedResponse() {
+        return suggestedResponse;
+    }
+
+    public void setSuggestedResponse(String suggestedResponse) {
+        this.suggestedResponse = suggestedResponse;
     }
 
     public void setEscalatedAt(Instant escalatedAt) {

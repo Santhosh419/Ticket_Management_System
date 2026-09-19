@@ -1,7 +1,6 @@
 package com.intellidesk.ticket.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import com.intellidesk.ticket.domain.TicketPriority;
@@ -9,10 +8,12 @@ import com.intellidesk.ticket.domain.TicketPriority;
 /**
  * Ticket creation payload.
  *
- * <p>Category and priority are EXPLICIT inputs in Phase 3. Phase 7 replaces
- * them with AI classification - the controller/service signature stays the
- * same, only the caller changes. Status is never accepted: new tickets always
- * start OPEN, decided by the domain, not the client.</p>
+ * <p>Category and priority are OPTIONAL: when omitted, they come from the
+ * classification layer ({@code TicketClassificationService} - rule-based by
+ * default, replaceable by an AI implementation via configuration). Explicit
+ * values always win, which keeps the Phase 3 contract intact. Status is never
+ * accepted: new tickets always start OPEN, decided by the domain, not the
+ * client.</p>
  */
 public record CreateTicketRequest(
 
@@ -24,10 +25,8 @@ public record CreateTicketRequest(
         @Size(min = 15, max = 5000, message = "Description must be 15-5000 characters")
         String description,
 
-        @NotNull(message = "Category is required")
         @Positive(message = "CategoryId must be a positive number")
         Long categoryId,
 
-        @NotNull(message = "Priority is required")
         TicketPriority priority
 ) {}

@@ -302,6 +302,30 @@ class TicketWorkflowIntegrationTest {
         assertThat(get("/api/admin/agents", customer).getStatusCode().value()).isEqualTo(403);
     }
 
+    @Test
+    @Order(11)
+    void unclassifiedTicketIsClassifiedOnCreateAndHintsAreAgentOnly() {
+        // no categoryId, no priority -> the rule-based classifier decides
+        ResponseEntity<String> created = post("/api/tickets", customer, Map.of(
+                "title", "Urgent: payment gateway not working",
+                "description", "We are losing money every minute, please fix this immediately."));
+        assertThat(created.getStatusCode().value()).isEqualTo(201);
+        assertThat(created.getBody())
+                .contains("\"status\":\"ASSIGNED\"")     // classified category feeds auto-assignment
+                .contains("\"code\":\"PAYMENT\"")
+                .contains("\"priority\":\"HIGH\"")
+                .contains("\"sentiment\":\"NEUTRAL\"")
+                .doesNotContain("suggestedResponse"); // creating customer: no agent hints
+
+        Long id = Long.parseLong(extractNumber(created.getBody(), "id"));
+
+        // the assigned agent DOES see the suggested response
+        String agentToken = login(agentEmail(), "AgentPass1");
+        assertThat(get("/api/tickets/" + id, agentToken).getBody())
+                .contains("suggestedResponse")
+                .contains("Verify the transaction in the payment gateway dashboard");
+    }
+
     // ---- helpers -------------------------------------------------------------
 
     private Long createOpenTicket() {

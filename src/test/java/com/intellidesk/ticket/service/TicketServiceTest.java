@@ -54,6 +54,7 @@ class TicketServiceTest {
     @Mock private CategoryRepository categoryRepository;
     @Mock private SlaPolicyRepository slaPolicyRepository;
     @Mock private com.intellidesk.agent.service.AssignmentService assignmentService;
+    @Mock private com.intellidesk.classification.TicketClassificationService classificationService;
 
     private final TicketMapper mapper = new TicketMapper(
             new com.intellidesk.sla.service.SlaService(
@@ -78,7 +79,15 @@ class TicketServiceTest {
                 numberGenerator, mapper, assignmentService,
                 // auto-assignment OFF in these tests; assignment has its own suite
                 new com.intellidesk.agent.AssignmentProperties(false, 0.5, 0.3, 0.2, 10),
-                auditService);
+                auditService, classificationService);
+
+        // deliberately DIFFERENT from what the tests request: create() must prove
+        // that explicit category/priority override the classification
+        lenient().when(classificationService.classify(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new com.intellidesk.classification.TicketClassification(
+                        "TECHNICAL", TicketPriority.LOW,
+                        com.intellidesk.classification.domain.Sentiment.NEUTRAL, "canned hint"));
 
         customer = user(1L, "customer@test.local", Role.CUSTOMER);
         otherCustomer = user(2L, "other@test.local", Role.CUSTOMER);
@@ -167,6 +176,72 @@ class TicketServiceTest {
                 customer))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("SLA policy");
+    }
+
+    @Test
+    void createWithoutCategoryOrPriorityUsesClassification() {
+        when(classificationService.classify(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new com.intellidesk.classification.TicketClassification(
+                        "PAYMENT", TicketPriority.HIGH,
+                        com.intellidesk.classification.domain.Sentiment.NEGATIVE,
+                        "We're sorry for the trouble - verify the transaction."));
+        when(categoryRepository.findByCode("PAYMENT")).thenReturn(Optional.of(payment));
+        when(slaPolicyRepository.findByPriorityAndActiveTrue(TicketPriority.HIGH))
+                .thenReturn(Optional.of(highPolicy));
+        when(ticketRepository.saveAndFlush(any(Ticket.class))).thenAnswer(invocation -> {
+            Ticket t = invocation.getArgument(0);
+            ReflectionTestUtils.setField(t, "id", 7L);
+            ReflectionTestUtils.setField(t, "createdAt", Instant.now());
+            ReflectionTestUtils.setField(t, "updatedAt", Instant.now());
+            return t;
+        });
+
+        TicketResponse response = ticketService.create(
+                new CreateTicketRequest("Refund not received",
+                        "I was charged twice for one order and the money never came back.",
+                        null, null), customer);
+
+        ArgumentCaptor<Ticket> captor = ArgumentCaptor.forClass(Ticket.class);
+        verify(ticketRepository, times(2)).saveAndFlush(captor.capture());
+        Ticket saved = captor.getValue();
+        assertThat(saved.getCategory()).isEqualTo(payment);
+        assertThat(saved.getPriority()).isEqualTo(TicketPriority.HIGH);
+        assertThat(saved.getSentiment())
+                .isEqualTo(com.intellidesk.classification.domain.Sentiment.NEGATIVE);
+        assertThat(saved.getSuggestedResponse()).contains("sorry");
+        // the creating customer never sees agent hints; sentiment stays visible
+        assertThat(response.suggestedResponse()).isNull();
+        assertThat(response.sentiment())
+                .isEqualTo(com.intellidesk.classification.domain.Sentiment.NEGATIVE);
+    }
+
+    @Test
+    void classificationFailureStillCreatesTheTicketWithSafeDefaults() {
+        when(classificationService.classify(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new IllegalStateException("AI provider down"));
+        when(categoryRepository.findByCode("OTHER")).thenReturn(Optional.of(other));
+        when(slaPolicyRepository.findByPriorityAndActiveTrue(TicketPriority.MEDIUM))
+                .thenReturn(Optional.of(new SlaPolicy(TicketPriority.MEDIUM, 24)));
+        when(ticketRepository.saveAndFlush(any(Ticket.class))).thenAnswer(invocation -> {
+            Ticket t = invocation.getArgument(0);
+            ReflectionTestUtils.setField(t, "id", 8L);
+            ReflectionTestUtils.setField(t, "createdAt", Instant.now());
+            ReflectionTestUtils.setField(t, "updatedAt", Instant.now());
+            return t;
+        });
+
+        TicketResponse response = ticketService.create(
+                new CreateTicketRequest("A strange request",
+                        "Hello team, something odd happened today and I need your help with it.",
+                        null, null), customer);
+
+        // graceful degradation: ticket lands in the general queue, request did NOT fail
+        assertThat(response.category().code()).isEqualTo("OTHER");
+        assertThat(response.priority()).isEqualTo(TicketPriority.MEDIUM);
+        assertThat(response.sentiment())
+                .isEqualTo(com.intellidesk.classification.domain.Sentiment.NEUTRAL);
     }
 
     // ---- getById access matrix ----------------------------------------------

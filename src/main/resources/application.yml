@@ -35,6 +35,11 @@ springdoc:
     path: /v3/api-docs
 
 intellidesk:
+  classification:
+    # "rule-based" is deterministic and needs no external API. Switching to a
+    # future "ai" provider is a config change only - business logic depends on
+    # the TicketClassificationService interface, never on an implementation.
+    provider: rule-based
   security:
     jwt:
       # REQUIRED in real deployments: export INTELLIDESK_JWT_SECRET (>= 32 chars).

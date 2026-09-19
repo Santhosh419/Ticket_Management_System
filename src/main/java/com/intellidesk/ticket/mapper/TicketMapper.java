@@ -26,7 +26,17 @@ public class TicketMapper {
         this.slaService = slaService;
     }
 
+    /** Full view for privileged callers (agents/admins see the suggested response). */
     public TicketResponse toResponse(Ticket ticket) {
+        return toResponse(ticket, true);
+    }
+
+    /**
+     * @param includeAgentHints the suggested response is an internal agent hint;
+     *        customer-facing views pass {@code false} so it is never exposed.
+     *        Sentiment stays visible - it describes the customer's own message.
+     */
+    public TicketResponse toResponse(Ticket ticket, boolean includeAgentHints) {
         SlaService.SlaEvaluation sla = slaService.evaluate(ticket, Instant.now());
         return new TicketResponse(
                 ticket.getId(),
@@ -52,7 +62,9 @@ public class TicketMapper {
                 new TicketResponse.SlaSummary(sla.status(), sla.minutesToDeadline()),
                 ticket.getResolvedAt(),
                 ticket.getClosedAt(),
-                ticket.getEscalatedAt()
+                ticket.getEscalatedAt(),
+                ticket.getSentiment(),
+                includeAgentHints ? ticket.getSuggestedResponse() : null
         );
     }
 }
