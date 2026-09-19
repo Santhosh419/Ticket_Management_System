@@ -134,6 +134,15 @@ public class Ticket extends BaseEntity {
         return ticketNumber;
     }
 
+    /**
+     * Assigned by {@code TicketService} via {@code TicketNumberGenerator}:
+     * a placeholder before the INSERT, the final {@code TKD-<year>-<id>}
+     * number after the id is known - always inside the creation transaction.
+     */
+    public void setTicketNumber(String ticketNumber) {
+        this.ticketNumber = ticketNumber;
+    }
+
     public String getTitle() {
         return title;
     }
@@ -184,6 +193,15 @@ public class Ticket extends BaseEntity {
 
     public SlaPolicy getSlaPolicy() {
         return slaPolicy;
+    }
+
+    /**
+     * Set only together with priority + a recomputed slaDeadlineAt
+     * (see TicketService.changePriorityWithSla) - the three fields must
+     * never drift apart.
+     */
+    public void setSlaPolicy(SlaPolicy slaPolicy) {
+        this.slaPolicy = slaPolicy;
     }
 
     public Instant getSlaDeadlineAt() {

@@ -8,9 +8,11 @@ suggested response) through a replaceable AI abstraction, assigns them to the be
 suited agent via a deterministic scoring algorithm, enforces a controlled ticket
 workflow, and monitors SLA deadlines with automatic escalation.
 
-> **Status: Phase 1 complete** — project setup, database design, entities,
-> repositories, seed data. Later phases add auth, workflow, assignment,
-> SLA scheduling, AI classification, search, dashboards, docs and Docker.
+> **Status: Phase 3 complete** — core ticket management (create, role-aware
+> retrieval, field updates with SLA recompute, paging) on top of Phase 2
+> authentication and Phase 1 database design. Later phases add the status
+> workflow + comments/history, assignment, SLA scheduling, AI classification,
+> search, dashboards, docs and Docker.
 > See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for engineering notes.
 
 ## Technology stack
@@ -79,8 +81,39 @@ export INTELLIDESK_DB_PASSWORD=intellidesk
 | POST | `/api/auth/login` | public | Email/password -> JWT |
 | GET | `/api/auth/me` | authenticated | Identity of the caller |
 | GET | `/api/admin/ping` | ADMIN only | Authorization probe (chain rule + `@PreAuthorize`) |
+| POST | `/api/tickets` | CUSTOMER | Create ticket (201 + `Location`) |
+| GET | `/api/tickets/{id}` | owner / assigned agent / ADMIN | Ticket detail |
+| GET | `/api/tickets/my` | CUSTOMER | Own tickets (paged) |
+| GET | `/api/tickets/assigned` | AGENT | Assigned tickets (paged) |
+| GET | `/api/tickets?status=&page=&size=&sort=` | ADMIN | All tickets (paged, optional status filter) |
+| PATCH | `/api/tickets/{id}` | CUSTOMER (own+OPEN: title/description), ADMIN (all fields) | Partial update |
 
-### Security flow
+### Ticket model (API view)
+
+`id`, `ticketNumber` (`TKD-2026-000001`, derived from the PK — no volume
+leakage, no race conditions), `title`, `description`, `status`, `priority`,
+`category {id, code, name}`, `customer {id, fullName}`,
+`assignedAgent {id, fullName} | absent`, `createdAt`, `updatedAt`,
+`slaDeadlineAt`, `resolvedAt` (absent until resolved), `closedAt` (absent
+until closed). Null fields are omitted (`non_null` JSON inclusion).
+
+Update rules: customers may edit title/description of their OWN ticket while
+it is OPEN (409 afterwards); only ADMINs change category/priority — a priority
+change recomputes the SLA deadline from the policy of the new priority
+(verifiable: HIGH 8h -> CRITICAL 2h moves the deadline closer). Status
+transitions arrive in Phase 4.
+
+```bash
+# Create a ticket (customer token)
+curl -X POST http://localhost:8080/api/tickets -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Payment deducted but order failed","description":"Rs.500 was deducted from my account but the order was cancelled.","categoryId":1,"priority":"HIGH"}'
+
+# Admin list with paging (unknown sort fields are rejected with 400)
+curl "http://localhost:8080/api/tickets?page=0&size=5&sort=createdAt,desc" -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Example auth requests
 
 ```
 client                    filter chain                       service

@@ -19,19 +19,29 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
 
     /**
      * Detail fetch joins every association used by TicketResponse in one query,
-     * preventing lazy-loading N+1 problems when building DTOs.
+     * preventing lazy-loading N+1 problems when building the DTO.
      */
     @EntityGraph(attributePaths = {"reporter", "assignedAgent", "category", "slaPolicy"})
     Optional<Ticket> findWithDetailsById(Long id);
 
+    /** Customer's own tickets (access rule enforced by the service). */
+    @EntityGraph(attributePaths = {"reporter", "assignedAgent", "category"})
+    Page<Ticket> findByReporterId(Long reporterId, Pageable pageable);
+
+    /** Agent's assigned tickets. */
+    @EntityGraph(attributePaths = {"reporter", "assignedAgent", "category"})
+    Page<Ticket> findByAssignedAgentId(Long agentId, Pageable pageable);
+
+    /** Admin: every ticket, newest first. */
+    @EntityGraph(attributePaths = {"reporter", "assignedAgent", "category"})
+    Page<Ticket> findAllByOrderByCreatedAtDesc(Pageable pageable);
+
+    /** Admin: filtered by status. */
+    @EntityGraph(attributePaths = {"reporter", "assignedAgent", "category"})
+    Page<Ticket> findByStatus(TicketStatus status, Pageable pageable);
+
+    /** SLA engine (Phase 6): open work items past their deadline. */
     List<Ticket> findByStatusInAndSlaDeadlineAtBefore(List<TicketStatus> statuses,
                                                       Instant deadline,
                                                       Pageable pageable);
-
-    // Slice-style filtered queries used by search/pagination (Phase 8).
-    Page<Ticket> findByReporterId(Long reporterId, Pageable pageable);
-
-    Page<Ticket> findByAssignedAgentId(Long agentId, Pageable pageable);
-
-    Page<Ticket> findByStatus(TicketStatus status, Pageable pageable);
 }

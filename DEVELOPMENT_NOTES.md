@@ -141,3 +141,55 @@ only would trade that away; noted as a conscious decision, revisitable with a
 short-TTL cache if profiling ever demands it.
 
 ---
+
+## Phase 3 (ticket CRUD, DTOs, authorization)
+
+### 16. Ticket numbers: derived from the primary key, written in two steps
+
+Requirements collision: the human-readable number must be UNIQUE + NOT NULL,
+but the natural source of uniqueness (the id) only exists AFTER the INSERT.
+Options considered: pre-guessed counters (race under concurrency), random
+suffixes (needs retry-on-conflict, non-deterministic), DB sequences (dialect
+portability). Chosen: persist with a unique 13-char placeholder, flush (id
+assigned), overwrite with `TKD-<year>-%06d(id)`, commit - all inside ONE
+transaction, so the placeholder is never visible to anyone else. Bonus: purely
+sequential numbers leak ticket volume to outsiders; id-derived numbers are
+stable and opaque enough. Regression tests: `TicketNumberGeneratorTest`
+(format, UTC year boundary, column length) + create tests asserting the final
+number.
+
+### 17. `non_null` JSON inclusion means "absent", not "null"
+
+`spring.jackson.default-property-inclusion: non_null` drops null fields from
+responses. The first integration test wrongly asserted `contains("assignedAgent":null)`
+- the field is OMITTED. The test was fixed, not the API: omitting is the better
+contract (smaller payloads; clients use presence checks).
+Lesson: write API tests against the intended CONTRACT, then make the config
+match - not the other way round.
+
+### 18. Unknown sort properties: map `PropertyReferenceException` or clients get 500
+
+`GET /api/tickets?sort=bogusProperty` blew up with a 500 because Spring Data
+validates sort properties lazily at query creation and throws
+`PropertyReferenceException`, which had no handler. Fix: dedicated handler ->
+400 `INVALID_SORT_PROPERTY`.
+Lesson: every user-controllable input that reaches the data layer (page, size,
+sort, filters) is an attack/error surface - clamp sizes, map framework
+exceptions.
+
+### 19. Why `PageResponse<T>` instead of returning `Page<T>`
+
+Serializing Spring Data's `PageImpl` is explicitly unsupported long-term (its
+JSON shape depends on internals and has changed across versions). A tiny
+envelope (`content, page, size, totalElements, totalPages, first, last`)
+freezes the public contract.
+
+### 20. Authorization layering
+
+URL rules (`/api/admin/**`) cannot express ownership ("customer sees only HIS
+tickets"), so `TicketService` performs data-dependent checks
+(`assertCanView`, per-role update rules). The controller's `@PreAuthorize`
+remains as the coarse outer gate - two independent layers, either one stops a
+violation.
+
+---
