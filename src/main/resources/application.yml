@@ -1,0 +1,104 @@
+spring:
+  application:
+    name: IntelliDesk
+
+  datasource:
+    # PostgreSQL is the primary database. Override via environment variables
+    # (INTELLIDESK_DB_URL / INTELLIDESK_DB_USERNAME / INTELLIDESK_DB_PASSWORD).
+    url: ${INTELLIDESK_DB_URL:jdbc:postgresql://localhost:5432/intellidesk}
+    username: ${INTELLIDESK_DB_USERNAME:intellidesk}
+    password: ${INTELLIDESK_DB_PASSWORD:intellidesk}
+
+  jpa:
+    hibernate:
+      # `update` evolves the schema across phases. Production would use
+      # versioned migrations (e.g. Flyway) - documented as future work.
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  error:
+    include-stacktrace: never
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+  api-docs:
+    path: /v3/api-docs
+
+intellidesk:
+  classification:
+    # "rule-based" is deterministic and needs no external API. Switching to a
+    # future "ai" provider is a config change only - business logic depends on
+    # the TicketClassificationService interface, never on an implementation.
+    provider: rule-based
+  security:
+    jwt:
+      # REQUIRED in real deployments: export INTELLIDESK_JWT_SECRET (>= 32 chars).
+      # The empty default makes startup fail fast with a clear message instead of
+      # silently running with a publicly known secret.
+      secret: ${INTELLIDESK_JWT_SECRET:}
+      expiration-minutes: ${INTELLIDESK_JWT_EXPIRATION_MINUTES:60}
+  sla:
+    # How often the SLA monitor scans for breached tickets (milliseconds).
+    scan-interval-ms: ${INTELLIDESK_SLA_SCAN_INTERVAL_MS:60000}
+    # A ticket becomes AT_RISK this many minutes before its deadline.
+    at-risk-minutes: 60
+  workflow:
+    # How long a CUSTOMER may reopen a CLOSED ticket.
+    reopen-window-days: 7
+  assignment:
+    # Automatically route every new OPEN ticket to the best-scoring agent.
+    auto-assign-on-create: false
+    # Scoring weights (documented in README; must roughly sum to 1.0).
+    weight-expertise: 0.50
+    weight-workload: 0.30
+    weight-availability: 0.20
+    # Capacity per agent: beyond this the workload term saturates.
+    max-active-tickets-per-agent: 10
+
+logging:
+  level:
+    com.intellidesk: INFO
+
+---
+# ======================================================================
+# Zero-setup profile: `--spring.profiles.active=h2`
+# Runs against an in-memory H2 database - handy for demos and local
+# experiments. Real deployments use PostgreSQL.
+# ======================================================================
+spring:
+  config:
+    activate:
+      on-profile: h2
+
+  datasource:
+    url: jdbc:h2:mem:intellidesk;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+
+intellidesk:
+  security:
+    jwt:
+      # Throwaway demo secret for the zero-setup H2 profile ONLY.
+      # Real deployments must set INTELLIDESK_JWT_SECRET instead.
+      secret: h2-demo-intellidesk-secret-0123456789abcdef-do-not-use-in-prod
+      expiration-minutes: 120
