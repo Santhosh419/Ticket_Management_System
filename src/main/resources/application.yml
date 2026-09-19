@@ -34,6 +34,15 @@ springdoc:
   api-docs:
     path: /v3/api-docs
 
+intellidesk:
+  security:
+    jwt:
+      # REQUIRED in real deployments: export INTELLIDESK_JWT_SECRET (>= 32 chars).
+      # The empty default makes startup fail fast with a clear message instead of
+      # silently running with a publicly known secret.
+      secret: ${INTELLIDESK_JWT_SECRET:}
+      expiration-minutes: ${INTELLIDESK_JWT_EXPIRATION_MINUTES:60}
+
 logging:
   level:
     com.intellidesk: INFO
@@ -64,3 +73,10 @@ logging:
   level:
     org.hibernate.SQL: DEBUG
 
+intellidesk:
+  security:
+    jwt:
+      # Throwaway demo secret for the zero-setup H2 profile ONLY.
+      # Real deployments must set INTELLIDESK_JWT_SECRET instead.
+      secret: h2-demo-intellidesk-secret-0123456789abcdef-do-not-use-in-prod
+      expiration-minutes: 120

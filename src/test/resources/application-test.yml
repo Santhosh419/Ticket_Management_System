@@ -18,3 +18,7 @@ intellidesk:
     admin-email: test-admin@intellidesk.local
     admin-password: TestAdmin@123
     admin-name: Test Admin
+  security:
+    jwt:
+      secret: test-only-intellidesk-jwt-secret-key-0123456789abcdef
+      expiration-minutes: 30
