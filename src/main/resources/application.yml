@@ -42,6 +42,23 @@ intellidesk:
       # silently running with a publicly known secret.
       secret: ${INTELLIDESK_JWT_SECRET:}
       expiration-minutes: ${INTELLIDESK_JWT_EXPIRATION_MINUTES:60}
+  sla:
+    # How often the SLA monitor scans for breached tickets (milliseconds).
+    scan-interval-ms: ${INTELLIDESK_SLA_SCAN_INTERVAL_MS:60000}
+    # A ticket becomes AT_RISK this many minutes before its deadline.
+    at-risk-minutes: 60
+  workflow:
+    # How long a CUSTOMER may reopen a CLOSED ticket.
+    reopen-window-days: 7
+  assignment:
+    # Automatically route every new OPEN ticket to the best-scoring agent.
+    auto-assign-on-create: false
+    # Scoring weights (documented in README; must roughly sum to 1.0).
+    weight-expertise: 0.50
+    weight-workload: 0.30
+    weight-availability: 0.20
+    # Capacity per agent: beyond this the workload term saturates.
+    max-active-tickets-per-agent: 10
 
 logging:
   level:

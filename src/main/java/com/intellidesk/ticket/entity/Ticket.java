@@ -94,6 +94,10 @@ public class Ticket extends BaseEntity {
     @Column(name = "escalated_at")
     private Instant escalatedAt;
 
+    /** How the ticket was fixed; required when resolving, cleared on reopen. */
+    @Column(columnDefinition = "text")
+    private String resolution;
+
     @Column(name = "resolved_at")
     private Instant resolvedAt;
 
@@ -214,6 +218,14 @@ public class Ticket extends BaseEntity {
 
     public Instant getEscalatedAt() {
         return escalatedAt;
+    }
+
+    public String getResolution() {
+        return resolution;
+    }
+
+    public void setResolution(String resolution) {
+        this.resolution = resolution;
     }
 
     public void setEscalatedAt(Instant escalatedAt) {

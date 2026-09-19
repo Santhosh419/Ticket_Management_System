@@ -50,10 +50,14 @@ import static org.mockito.Mockito.when;
 class TicketServiceTest {
 
     @Mock private TicketRepository ticketRepository;
+@Mock private com.intellidesk.ticket.service.TicketAuditService auditService;
     @Mock private CategoryRepository categoryRepository;
     @Mock private SlaPolicyRepository slaPolicyRepository;
+    @Mock private com.intellidesk.agent.service.AssignmentService assignmentService;
 
-    private final TicketMapper mapper = new TicketMapper();
+    private final TicketMapper mapper = new TicketMapper(
+            new com.intellidesk.sla.service.SlaService(
+                    new com.intellidesk.sla.SlaProperties(60000, 60)));
     private final TicketNumberGenerator numberGenerator = new TicketNumberGenerator();
 
     private TicketService ticketService;
@@ -71,7 +75,10 @@ class TicketServiceTest {
     void setUp() {
         ticketService = new TicketService(
                 ticketRepository, categoryRepository, slaPolicyRepository,
-                numberGenerator, mapper);
+                numberGenerator, mapper, assignmentService,
+                // auto-assignment OFF in these tests; assignment has its own suite
+                new com.intellidesk.agent.AssignmentProperties(false, 0.5, 0.3, 0.2, 10),
+                auditService);
 
         customer = user(1L, "customer@test.local", Role.CUSTOMER);
         otherCustomer = user(2L, "other@test.local", Role.CUSTOMER);

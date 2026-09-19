@@ -44,14 +44,23 @@ public enum TicketStatus {
             ESCALATED, Set.of(IN_PROGRESS, ASSIGNED)
     );
 
+    /** Statuses counted as "work in flight" for the assignment workload score. */
+    public static final Set<TicketStatus> ACTIVE_WORK_STATUSES =
+            Set.of(ASSIGNED, IN_PROGRESS, WAITING_FOR_CUSTOMER, ESCALATED);
+
+    /** Statuses the SLA monitor may escalate FROM (ESCALATED is already escalated). */
+    public static final Set<TicketStatus> ESCALATABLE_STATUSES =
+            Set.of(OPEN, ASSIGNED, IN_PROGRESS, WAITING_FOR_CUSTOMER);
+
     /** True if moving from this status to {@code target} is legal. */
     public boolean canTransitionTo(TicketStatus target) {
         return allowedTransitions().contains(target);
     }
 
-    /** Read-only view of the legal target statuses. */
+    /** Read-only view of the legal targets, in enum-declaration order (deterministic). */
     public Set<TicketStatus> allowedTransitions() {
-        return Set.copyOf(ALLOWED_TRANSITIONS.getOrDefault(this, Set.of()));
+        return java.util.Collections.unmodifiableSet(java.util.EnumSet.copyOf(
+                ALLOWED_TRANSITIONS.getOrDefault(this, java.util.EnumSet.noneOf(TicketStatus.class))));
     }
 
     /** Closed tickets may only be re-opened, nothing else. */

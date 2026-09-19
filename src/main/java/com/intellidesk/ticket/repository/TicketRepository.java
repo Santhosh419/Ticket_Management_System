@@ -40,8 +40,11 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
     @EntityGraph(attributePaths = {"reporter", "assignedAgent", "category"})
     Page<Ticket> findByStatus(TicketStatus status, Pageable pageable);
 
-    /** SLA engine (Phase 6): open work items past their deadline. */
+    /** SLA monitor: breached work items, idempotent batch scan (paged). */
     List<Ticket> findByStatusInAndSlaDeadlineAtBefore(List<TicketStatus> statuses,
                                                       Instant deadline,
                                                       Pageable pageable);
+
+    /** Assignment workload term: an agent's in-flight ticket count. */
+    long countByAssignedAgentIdAndStatusIn(Long agentId, java.util.Collection<TicketStatus> statuses);
 }

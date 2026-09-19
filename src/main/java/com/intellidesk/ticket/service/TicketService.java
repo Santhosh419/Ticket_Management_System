@@ -6,6 +6,8 @@ import com.intellidesk.common.exception.InvalidRequestException;
 import com.intellidesk.common.exception.InvalidTicketStateException;
 import com.intellidesk.common.exception.ResourceNotFoundException;
 import com.intellidesk.common.exception.UnauthorizedAccessException;
+import com.intellidesk.agent.AssignmentProperties;
+import com.intellidesk.agent.service.AssignmentService;
 import com.intellidesk.sla.entity.SlaPolicy;
 import com.intellidesk.sla.repository.SlaPolicyRepository;
 import com.intellidesk.ticket.domain.TicketPriority;
@@ -53,17 +55,26 @@ public class TicketService {
     private final SlaPolicyRepository slaPolicyRepository;
     private final TicketNumberGenerator numberGenerator;
     private final TicketMapper mapper;
+    private final AssignmentService assignmentService;
+    private final AssignmentProperties assignmentProperties;
+    private final TicketAuditService auditService;
 
     public TicketService(TicketRepository ticketRepository,
                          CategoryRepository categoryRepository,
                          SlaPolicyRepository slaPolicyRepository,
                          TicketNumberGenerator numberGenerator,
-                         TicketMapper mapper) {
+                         TicketMapper mapper,
+                         AssignmentService assignmentService,
+                         AssignmentProperties assignmentProperties,
+                         TicketAuditService auditService) {
         this.ticketRepository = ticketRepository;
         this.categoryRepository = categoryRepository;
         this.slaPolicyRepository = slaPolicyRepository;
         this.numberGenerator = numberGenerator;
         this.mapper = mapper;
+        this.assignmentService = assignmentService;
+        this.assignmentProperties = assignmentProperties;
+        this.auditService = auditService;
     }
 
     // ---- commands ----------------------------------------------------------
@@ -95,9 +106,18 @@ public class TicketService {
         saved.setTicketNumber(numberGenerator.format(saved.getId(), saved.getCreatedAt()));
         ticketRepository.saveAndFlush(saved);                 // UPDATE with final number
 
-        log.info("Created ticket {} (id={}, category={}, priority={}, slaDeadline={})",
+        // the audit trail starts at creation: null -> OPEN
+        auditService.record(saved, null, TicketStatus.OPEN, reporter, "Ticket created");
+
+        if (assignmentProperties.autoAssignOnCreate()) {
+            // same transaction: assign best-scoring agent right away (system actor)
+            saved = assignmentService.assign(saved.getId(), null);
+        }
+
+        log.info("Created ticket {} (id={}, category={}, priority={}, slaDeadline={}, agent={})",
                 saved.getTicketNumber(), saved.getId(), category.getCode(),
-                saved.getPriority(), deadline);
+                saved.getPriority(), deadline,
+                saved.getAssignedAgent() == null ? "-" : saved.getAssignedAgent().getEmail());
         return mapper.toResponse(saved);
     }
 

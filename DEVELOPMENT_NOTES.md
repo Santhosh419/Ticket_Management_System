@@ -193,3 +193,81 @@ remains as the coarse outer gate - two independent layers, either one stops a
 violation.
 
 ---
+
+## Phase 4 (business intelligence: workflow, audit, assignment, SLA monitor)
+
+### 21. `Set.of` iteration order is unspecified - error messages were flaky
+
+`allowedTransitions()` returned `Set.copyOf(...)`, and the 409 message printed
+that set (`Allowed: [IN_PROGRESS, ESCALATED]`). `Set.of`/`Set.copyOf` make no
+ordering promise, so the same request could answer with a different bracket
+order on different JVM runs - the integration test asserting the message was
+flaky **by construction of the JDK, not the test**. Fix: `EnumSet.copyOf` +
+unmodifiable view; `EnumSet` iterates in declaration order, so the message is
+deterministic and slightly cheaper.
+Lesson: any collection that ends up in user-visible text or test assertions
+must have a defined order.
+
+### 22. `Stream.max` on a single element never calls the comparator
+
+Two pool tests stubbed the workload count of their only candidate and Mockito
+(Strict Stubs) failed them with `UnnecessaryStubbingException`. Root cause:
+`reduce` initializes with the first element, so for a one-element stream the
+comparator - and therefore `factsOf` - never runs. The stubs really were
+unused. This is also why tie-break bugs survive single-candidate tests.
+Lesson: strict stubbing is a design-reviewer; when it complains, first ask
+which production path was not exercised.
+
+### 23. Tie-break direction: express intent, don't rely on comparator gymnastics
+
+The first tie-break implementation was
+`max(comparingDouble(score).thenComparing(comparingLong(id).reversed()))`,
+which picks the HIGHER id on ties while the documentation promised the lower
+one - the bug survived because no test pinned an exact tie. The fix reads as
+the rule: `min(score.reversed().thenComparingLong(id))` = best score, then
+lower id, with a dedicated `tiesBreakToTheLowerAgentId` test.
+Lesson: document-then-test the tie-break explicitly; comparators are the
+classic place where intent and code diverge silently.
+
+### 24. Reopen semantics: OPEN means "back in the assignment queue"
+
+The first reopen implementation cleared resolution data but kept the assigned
+agent, producing tickets that were `OPEN` yet attached to an agent - and
+unassignable, because `POST /assign` only accepts OPEN tickets. The
+integration test caught it (expected 200, got 409). Fix: reopening to OPEN
+clears the stale agent; the admin can reassign; `escalatedAt` is deliberately
+kept as the record of the last escalation.
+Lesson: every status must have one clear queue semantics, and tests that walk
+the full lifecycle are the only ones that surface state-machine compost.
+
+### 25. Feature flags and contract tests: default OFF, enable per context
+
+`auto-assign-on-create=true` as the global default silently changed the
+Phase-3 contract (create returned ASSIGNED instead of OPEN) and cascaded into
+six failures. Decision: ship the flag default-OFF in `application.yml`, turn
+it on explicitly where the feature is exercised (the workflow integration
+test passes it as a `@SpringBootTest` property). Old contract stays green,
+new behavior is still fully verified.
+Lesson: new features that change existing endpoints' observable behavior
+belong behind flags whose default keeps the old contract.
+
+### 26. Audit trail from day one: creation is a transition too
+
+History rows for `null -> OPEN` (`oldStatus` nullable) mean the trail starts
+at creation, not at the first transition - and auto-assignment shows up as
+its own `OPEN -> ASSIGNED` row with the scoring reason in plain text. The
+duplicate guard in `TicketAuditService` (same ticket/status/reason) is what
+makes scheduler escalation idempotent even if the row-recheck inside the
+transaction ever regressed: three independent layers (scan filter excludes
+ESCALATED, per-row status recheck, audit guard).
+Lesson: idempotency of background jobs is cheapest when the audit log itself
+refuses duplicates.
+
+### 27. Edit tooling: verify every multi-line edit by grep
+
+Twice in this phase a fuzzy "search & replace" edit reported success while
+applying only partially (missing imports in `TicketController`, a leftover
+`REOPEN_WINDOW` constant). The fix each time was a deterministic scripted
+edit plus `grep` verification. The compiler catches these eventually - but
+only after a full failed compile cycle.
+Lesson (recurring): trust anchors, not fuzzy matches; grep after batches.
