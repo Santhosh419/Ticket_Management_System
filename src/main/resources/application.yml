@@ -1,0 +1,66 @@
+spring:
+  application:
+    name: IntelliDesk
+
+  datasource:
+    # PostgreSQL is the primary database. Override via environment variables
+    # (INTELLIDESK_DB_URL / INTELLIDESK_DB_USERNAME / INTELLIDESK_DB_PASSWORD).
+    url: ${INTELLIDESK_DB_URL:jdbc:postgresql://localhost:5432/intellidesk}
+    username: ${INTELLIDESK_DB_USERNAME:intellidesk}
+    password: ${INTELLIDESK_DB_PASSWORD:intellidesk}
+
+  jpa:
+    hibernate:
+      # `update` evolves the schema across phases. Production would use
+      # versioned migrations (e.g. Flyway) - documented as future work.
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  error:
+    include-stacktrace: never
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    com.intellidesk: INFO
+
+---
+# ======================================================================
+# Zero-setup profile: `--spring.profiles.active=h2`
+# Runs against an in-memory H2 database - handy for demos and local
+# experiments. Real deployments use PostgreSQL.
+# ======================================================================
+spring:
+  config:
+    activate:
+      on-profile: h2
+
+  datasource:
+    url: jdbc:h2:mem:intellidesk;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+

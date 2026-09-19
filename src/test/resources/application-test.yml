@@ -1,0 +1,20 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:intellidesk_test;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+
+logging:
+  level:
+    com.intellidesk: INFO
+
+intellidesk:
+  seed:
+    admin-email: test-admin@intellidesk.local
+    admin-password: TestAdmin@123
+    admin-name: Test Admin
